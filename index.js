@@ -9,7 +9,6 @@ const { MongoClient, ServerApiVersion } = require("mongodb");
 const app = express();
 const port = process.env.PORT || 5000;
 
-// HTTP Server & Socket.io setup
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
@@ -30,22 +29,18 @@ const client = new MongoClient(uri, {
   serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true },
 });
 
-// --- Random Chat Variables ---
 let waitingUsers = [];
 let onlineUsersCount = 0;
 
 async function run() {
   try {
-    // await client.connect(); // Production-এ এটি আন-কমেন্ট করতে পারেন
     const ConnectDB = client.db("Layout");
     const usersCollection = ConnectDB.collection("users");
 
-    // --- Socket.io Logic Start ---
     io.on("connection", (socket) => {
       onlineUsersCount++;
       io.emit("update_user_count", onlineUsersCount);
 
-      // ১. কিউতে জয়েন করা (Matching Logic)
       socket.on("join_queue", (data) => {
         const newUser = { id: socket.id, username: data.username };
 
@@ -67,43 +62,32 @@ async function run() {
         }
       });
 
-      // ২. টেক্সট মেসেজ আদান-প্রদান
       socket.on("send_message", (data) => {
-        // room আইডি ব্যবহার করে পার্টনারকে মেসেজ পাঠানো
         socket.to(data.room).emit("receive_message", data);
       });
 
-      // ৩. WebRTC সিগন্যালিং (অডিও কানেকশনের জন্য ডাটা পাস করা)
       socket.on("webrtc_signal", (data) => {
-        // data.initiator-সহ পুরো অবজেক্টটি পার্টনারকে পাঠান
         socket.to(data.room).emit("webrtc_signal", {
           signal: data.signal,
           room: data.room,
-          initiator: data.initiator // এটি অত্যন্ত জরুরি
+          initiator: data.initiator 
         });
       });
 
-      // ৪. রুম লিভ করা বা নেক্সট করা
       socket.on("leave_room", ({ room }) => {
         socket.leave(room);
         socket.to(room).emit("partner_disconnected");
       });
 
-      // ৫. কানেকশন বিচ্ছিন্ন হলে
       socket.on("disconnect", () => {
         onlineUsersCount--;
         io.emit("update_user_count", onlineUsersCount);
         waitingUsers = waitingUsers.filter((u) => u.id !== socket.id);
 
-        // ডিসকানেক্ট হলে তার সাথে থাকা পার্টনারকে জানানো
-        // এটি একটু কমপ্লেক্স হতে পারে কারণ সকেট রুম অটো লিভ করে, 
-        // তাই ফ্রন্টএন্ডে partner_disconnected হ্যান্ডেল করা ভালো।
         console.log("A user disconnected");
       });
     });
-    // --- Socket.io Logic End ---
 
-    // JWT & Other API Routes
     app.post("/jwt", async (req, res) => {
       const user = req.body;
       const token = jwt.sign(user, process.env.JWT_SECRET, { expiresIn: "1h" });
