@@ -31,7 +31,7 @@ const client = new MongoClient(uri, {
 });
 
 // --- Random Chat Variables ---
-let waitingUsers = []; 
+let waitingUsers = [];
 let onlineUsersCount = 0;
 
 async function run() {
@@ -48,9 +48,9 @@ async function run() {
       // ১. কিউতে জয়েন করা (Matching Logic)
       socket.on("join_queue", (data) => {
         const newUser = { id: socket.id, username: data.username };
-        
+
         if (waitingUsers.length > 0) {
-          const partner = waitingUsers.shift(); 
+          const partner = waitingUsers.shift();
           const roomName = `room_${partner.id}_${socket.id}`;
 
           socket.join(roomName);
@@ -59,7 +59,7 @@ async function run() {
 
           io.to(partner.id).emit("match_found", { room: roomName, partner: newUser.username });
           socket.emit("match_found", { room: roomName, partner: partner.username });
-          
+
           console.log(`Match Found: ${roomName}`);
         } else {
           waitingUsers.push(newUser);
@@ -75,10 +75,11 @@ async function run() {
 
       // ৩. WebRTC সিগন্যালিং (অডিও কানেকশনের জন্য ডাটা পাস করা)
       socket.on("webrtc_signal", (data) => {
-        // এক ইউজারের সিগন্যাল (Offer/Answer) অন্য ইউজারকে পাঠানো
+        // data.initiator-সহ পুরো অবজেক্টটি পার্টনারকে পাঠান
         socket.to(data.room).emit("webrtc_signal", {
           signal: data.signal,
-          room: data.room
+          room: data.room,
+          initiator: data.initiator // এটি অত্যন্ত জরুরি
         });
       });
 
@@ -93,7 +94,7 @@ async function run() {
         onlineUsersCount--;
         io.emit("update_user_count", onlineUsersCount);
         waitingUsers = waitingUsers.filter((u) => u.id !== socket.id);
-        
+
         // ডিসকানেক্ট হলে তার সাথে থাকা পার্টনারকে জানানো
         // এটি একটু কমপ্লেক্স হতে পারে কারণ সকেট রুম অটো লিভ করে, 
         // তাই ফ্রন্টএন্ডে partner_disconnected হ্যান্ডেল করা ভালো।
