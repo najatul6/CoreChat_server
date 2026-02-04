@@ -2,108 +2,117 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
-const app = express();
-const port = 5000 || process.env.PORT;
+const http = require("http"); // Socket.io এর জন্য লাগবে
+const { Server } = require("socket.io");
 const { MongoClient, ServerApiVersion } = require("mongodb");
-const uri = process.env.MONGO_URI;
-app.use(express.json());
-app.use(
-  cors({
-    origin: "http://localhost:5173", 
-    methods: ["GET", "POST", "PUT", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
 
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
+const app = express();
+const port = process.env.PORT || 5000;
+
+// HTTP Server & Socket.io setup
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "http://localhost:5173",
+    methods: ["GET", "POST"],
   },
 });
 
+app.use(express.json());
+app.use(cors({
+  origin: ["http://localhost:5173","https://core-chat-pi.vercel.app"],
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+}));
+
+const uri = process.env.MONGO_URI;
+const client = new MongoClient(uri, {
+  serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true },
+});
+
+// --- Random Chat Logic Variables ---
+let waitingUsers = []; // যারা পার্টনার খুঁজছে
+let onlineUsersCount = 0;
+
 async function run() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
-    // TODO: Delete 31 Number Line 
-    await client.connect();
-
-    // Create a database and collection
-    const ConnectDB=client.db("Layout")
+    // await client.connect(); // Production এ এটি রাখুন
+    const ConnectDB = client.db("Layout");
     const usersCollection = ConnectDB.collection("users");
 
-    // JWT
+    // --- Socket.io Logic Start ---
+    io.on("connection", (socket) => {
+      onlineUsersCount++;
+      io.emit("update_user_count", onlineUsersCount); 
+
+      // ১. কিউতে জয়েন করা (Matching Logic)
+      socket.on("join_queue", (data) => {
+        const newUser = { id: socket.id, username: data.username };
+        
+        // যদি কিউতে কেউ আগে থেকে থাকে
+        if (waitingUsers.length > 0) {
+          const partner = waitingUsers.shift(); 
+          const roomName = `room_${partner.id}_${socket.id}`;
+
+          socket.join(roomName);
+          io.to(partner.id).emit("match_found", { room: roomName, partner: newUser.username });
+          socket.emit("match_found", { room: roomName, partner: partner.username });
+          
+          console.log(`Match Found: ${roomName}`);
+        } else {
+          // কেউ না থাকলে কিউতে ওয়েট করা
+          waitingUsers.push(newUser);
+          socket.emit("searching", true);
+        }
+      });
+
+      // ২. মেসেজ আদান-প্রদান
+      socket.on("send_message", (data) => {
+        // data তে room, sender, text, image, isImage থাকবে
+        socket.to(data.room).emit("receive_message", data);
+      });
+
+      // ৩. লিভ রুম বা নেক্সট লজিক
+      socket.on("leave_room", ({ room }) => {
+        socket.leave(room);
+        socket.to(room).emit("partner_disconnected");
+      });
+
+      // ৪. ডিসকানেক্ট হলে
+      socket.on("disconnect", () => {
+        onlineUsersCount--;
+        io.emit("update_user_count", onlineUsersCount);
+        waitingUsers = waitingUsers.filter((u) => u.id !== socket.id);
+        console.log("A user disconnected");
+      });
+    });
+    // --- Socket.io Logic End ---
+
+    // JWT & Other API Routes
     app.post("/jwt", async (req, res) => {
       const user = req.body;
-      const token = jwt.sign(user, process.env.JWT_SECRET, {
-        expiresIn: "1h",
-      });
+      const token = jwt.sign(user, process.env.JWT_SECRET, { expiresIn: "1h" });
       res.send({ token });
     });
-
-    // Verify Token
-    const verifyToken = (req, res, next) => {
-      if (!req.headers.authorization) {
-        return res.status(401).send({ message: "unauthorized access" });
-      }
-      const token = req.headers.authorization.split(" ")[1];
-      jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-        if (err) {
-          return res.status(401).send({ message: "unauthorized access" });
-        }
-        req.decoded = decoded;
-        next();
-      });
-    };
-
-    // Verify Admin
-    const verifyAdmin = async (req, res, next) => {
-      const email = req.decoded.email;
-      const query = { email: email };
-      const user = await userCollection.findOne(query);
-      const isAdmin = user?.role === "admin";
-      if (!isAdmin) {
-        return res.status(403).send({ message: "forbidden access" });
-      }
-      next();
-    };
 
     app.post("/createUser", async (req, res) => {
       const user = req.body;
       const query = { email: user.email };
-      const existingUser=await usersCollection.findOne(query);
-      if(existingUser){
-        return res.status(409).send({message:"user already exists", insertedId:null});
-      }
+      const existingUser = await usersCollection.findOne(query);
+      if (existingUser) return res.status(409).send({ message: "exists" });
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
 
-    app.get("/users/:email", async (req, res) => {
-      const email = req.params.email;
-      const query = { email: email };
-      const result = await usersCollection.findOne(query);
-      res.send(result);
-    });
-
-    // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
-  } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
+    console.log("Successfully connected to MongoDB and Socket.io is ready!");
+  } catch (err) {
+    console.error(err);
   }
 }
 run().catch(console.dir);
 
-app.get("/", (req, res) => {
-  res.send("Hello World! This is a base template for a Node.js server.");
-});
+app.get("/", (req, res) => res.send("Server is Running..."));
 
-app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`);
+server.listen(port, () => {
+  console.log(`Server listening on port ${port}`);
 });
